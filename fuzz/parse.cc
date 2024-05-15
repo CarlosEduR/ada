@@ -46,6 +46,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
     // length += out_url->to_string().size();
     out_url->to_string();
+    out_url->has_valid_domain();
   }
 
   /**
@@ -84,6 +85,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     // length += out_aggregator->to_string().size();
     out_aggregator->to_string();
     out_aggregator->to_diagram();
+    out_aggregator->has_valid_domain();
 
     // clear methods
     out_aggregator->clear_port();
