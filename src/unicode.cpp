@@ -1,7 +1,8 @@
+#include "ada/unicode.h"
+
 #include "ada.h"
 #include "ada/character_sets-inl.h"
 #include "ada/common_defs.h"
-#include "ada/unicode.h"
 
 ADA_PUSH_DISABLE_ALL_WARNINGS
 #include "ada_idna.cpp"
@@ -53,7 +54,8 @@ ada_really_inline bool has_tabs_or_newline(
     std::string_view user_input) noexcept {
   // first check for short strings in which case we do it naively.
   if (user_input.size() < 16) {  // slow path
-    return std::any_of(user_input.begin(), user_input.end(), is_tabs_or_newline);
+    return std::any_of(user_input.begin(), user_input.end(),
+                       is_tabs_or_newline);
   }
   // fast path for long strings (expected to be common)
   size_t i = 0;
