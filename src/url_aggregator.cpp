@@ -13,6 +13,24 @@
 #include <string>
 #include <string_view>
 
+namespace {
+
+ada_really_inline void apply_shifted_non_scheme_offsets(
+    ada::url_components& components, uint32_t new_difference) {
+  components.username_end += new_difference;
+  components.host_start += new_difference;
+  components.host_end += new_difference;
+  components.pathname_start += new_difference;
+  if (components.search_start != ada::url_components::omitted) {
+    components.search_start += new_difference;
+  }
+  if (components.hash_start != ada::url_components::omitted) {
+    components.hash_start += new_difference;
+  }
+}
+
+}  // namespace
+
 namespace ada {
 template <bool has_state_override>
 [[nodiscard]] ada_really_inline bool url_aggregator::parse_scheme_with_colon(
@@ -117,6 +135,7 @@ inline void url_aggregator::copy_scheme(const url_aggregator& u) {
   // next line could overflow but unsigned arithmetic has well-defined
   // overflows.
   uint32_t new_difference = u.components.protocol_end - components.protocol_end;
+
   type = u.type;
   buffer.erase(0, components.protocol_end);
   buffer.insert(0, u.get_protocol());
@@ -127,17 +146,7 @@ inline void url_aggregator::copy_scheme(const url_aggregator& u) {
     return;
   }
 
-  // Update the rest of the components.
-  components.username_end += new_difference;
-  components.host_start += new_difference;
-  components.host_end += new_difference;
-  components.pathname_start += new_difference;
-  if (components.search_start != url_components::omitted) {
-    components.search_start += new_difference;
-  }
-  if (components.hash_start != url_components::omitted) {
-    components.hash_start += new_difference;
-  }
+  apply_shifted_non_scheme_offsets(components, new_difference);
   ADA_ASSERT_TRUE(validate());
 }
 
@@ -161,17 +170,7 @@ inline void url_aggregator::set_scheme_from_view_with_colon(
   }
   components.protocol_end += new_difference;
 
-  // Update the rest of the components.
-  components.username_end += new_difference;
-  components.host_start += new_difference;
-  components.host_end += new_difference;
-  components.pathname_start += new_difference;
-  if (components.search_start != url_components::omitted) {
-    components.search_start += new_difference;
-  }
-  if (components.hash_start != url_components::omitted) {
-    components.hash_start += new_difference;
-  }
+  apply_shifted_non_scheme_offsets(components, new_difference);
   ADA_ASSERT_TRUE(validate());
 }
 
@@ -193,17 +192,7 @@ inline void url_aggregator::set_scheme(std::string_view new_scheme) {
   }
   components.protocol_end = uint32_t(new_scheme.size() + 1);
 
-  // Update the rest of the components.
-  components.username_end += new_difference;
-  components.host_start += new_difference;
-  components.host_end += new_difference;
-  components.pathname_start += new_difference;
-  if (components.search_start != url_components::omitted) {
-    components.search_start += new_difference;
-  }
-  if (components.hash_start != url_components::omitted) {
-    components.hash_start += new_difference;
-  }
+  apply_shifted_non_scheme_offsets(components, new_difference);
   ADA_ASSERT_TRUE(validate());
 }
 
@@ -228,8 +217,14 @@ bool url_aggregator::set_protocol(const std::string_view input) {
       std::ranges::find_if_not(view, unicode::is_alnum_plus);
 
   if (pointer != view.end() && *pointer == ':') {
-    return parse_scheme_with_colon<true>(
+    url_aggregator saved_url(*this);
+    bool result = parse_scheme_with_colon<true>(
         view.substr(0, pointer - view.begin() + 1));
+    if (result && buffer.size() > ada::get_max_input_length()) {
+      *this = std::move(saved_url);
+      return false;
+    }
+    return result;
   }
   return false;
 }
@@ -241,6 +236,7 @@ bool url_aggregator::set_username(const std::string_view input) {
   if (cannot_have_credentials_or_port()) {
     return false;
   }
+  url_aggregator saved_url(*this);
   size_t idx = ada::unicode::percent_encode_index(
       input, character_sets::USERINFO_PERCENT_ENCODE);
   if (idx == input.size()) {
@@ -249,6 +245,10 @@ bool url_aggregator::set_username(const std::string_view input) {
     // We only create a temporary string if we have to!
     update_base_username(ada::unicode::percent_encode(
         input, character_sets::USERINFO_PERCENT_ENCODE, idx));
+  }
+  if (buffer.size() > ada::get_max_input_length()) {
+    *this = std::move(saved_url);
+    return false;
   }
   ADA_ASSERT_TRUE(validate());
   return true;
@@ -261,6 +261,7 @@ bool url_aggregator::set_password(const std::string_view input) {
   if (cannot_have_credentials_or_port()) {
     return false;
   }
+  url_aggregator saved_url(*this);
   size_t idx = ada::unicode::percent_encode_index(
       input, character_sets::USERINFO_PERCENT_ENCODE);
   if (idx == input.size()) {
@@ -269,6 +270,10 @@ bool url_aggregator::set_password(const std::string_view input) {
     // We only create a temporary string if we have to!
     update_base_password(ada::unicode::percent_encode(
         input, character_sets::USERINFO_PERCENT_ENCODE, idx));
+  }
+  if (buffer.size() > ada::get_max_input_length()) {
+    *this = std::move(saved_url);
+    return false;
   }
   ADA_ASSERT_TRUE(validate());
   return true;
@@ -306,12 +311,16 @@ bool url_aggregator::set_port(const std::string_view input) {
       std::string_view(trimmed.data(), first_non_digit - trimmed.begin());
 
   // Revert changes if parse_port fails.
-  uint32_t previous_port = components.port;
+  url_aggregator saved_url(*this);
   parse_port(digits_to_parse);
   if (is_valid) {
+    if (buffer.size() > ada::get_max_input_length()) {
+      *this = std::move(saved_url);
+      return false;
+    }
     return true;
   }
-  update_base_port(previous_port);
+  *this = std::move(saved_url);
   is_valid = true;
   ADA_ASSERT_TRUE(validate());
   return false;
@@ -324,6 +333,7 @@ bool url_aggregator::set_pathname(const std::string_view input) {
   if (has_opaque_path) {
     return false;
   }
+  url_aggregator saved_url(*this);
   clear_pathname();
   parse_path(input);
   if (get_pathname().starts_with("//") && !has_authority() && !has_dash_dot()) {
@@ -335,6 +345,10 @@ bool url_aggregator::set_pathname(const std::string_view input) {
     if (components.hash_start != url_components::omitted) {
       components.hash_start += 2;
     }
+  }
+  if (buffer.size() > ada::get_max_input_length()) {
+    *this = std::move(saved_url);
+    return false;
   }
   ADA_ASSERT_TRUE(validate());
   return true;
@@ -399,7 +413,12 @@ void url_aggregator::set_search(const std::string_view input) {
       is_special() ? ada::character_sets::SPECIAL_QUERY_PERCENT_ENCODE
                    : ada::character_sets::QUERY_PERCENT_ENCODE;
 
+  url_aggregator saved_url(*this);
   update_base_search(new_value, query_percent_encode_set);
+  if (buffer.size() > ada::get_max_input_length()) {
+    *this = std::move(saved_url);
+    return;
+  }
   ADA_ASSERT_TRUE(validate());
 }
 
@@ -419,7 +438,12 @@ void url_aggregator::set_hash(const std::string_view input) {
   std::string new_value;
   new_value = input[0] == '#' ? input.substr(1) : input;
   helpers::remove_ascii_tab_or_newline(new_value);
+  url_aggregator saved_url(*this);
   update_unencoded_base_hash(new_value);
+  if (buffer.size() > ada::get_max_input_length()) {
+    *this = std::move(saved_url);
+    return;
+  }
   ADA_ASSERT_TRUE(validate());
 }
 
@@ -430,6 +454,11 @@ bool url_aggregator::set_href(const std::string_view input) {
   ada_log("url_aggregator::set_href, success :", out.has_value());
 
   if (out) {
+    // The parser enforces get_max_input_length() on both the input and the
+    // normalized result. This is a defense-in-depth check.
+    if (out->buffer.size() > ada::get_max_input_length()) {
+      return false;
+    }
     ada_log("url_aggregator::set_href, parsed ", out->to_string());
     // TODO: Figure out why the following line puts test to never finish.
     *this = *out;
@@ -554,6 +583,8 @@ bool url_aggregator::set_host_or_hostname(const std::string_view input) {
     return false;
   }
 
+  url_aggregator saved_url(*this);
+
   std::string previous_host(get_hostname());
   uint32_t previous_port = components.port;
 
@@ -563,6 +594,14 @@ bool url_aggregator::set_host_or_hostname(const std::string_view input) {
                                       : input.size());
   helpers::remove_ascii_tab_or_newline(_host);
   std::string_view new_host(_host);
+
+  auto check_url_size = [&]() -> bool {
+    if (buffer.size() > ada::get_max_input_length()) {
+      *this = std::move(saved_url);
+      return false;
+    }
+    return true;
+  };
 
   // If url's scheme is "file", then set state to file host state, instead of
   // host state.
@@ -602,7 +641,7 @@ bool url_aggregator::set_host_or_hostname(const std::string_view input) {
       if (!port_buffer.empty()) {
         set_port(port_buffer);
       }
-      return true;
+      return check_url_size();
     }
     // Otherwise, if one of the following is true:
     // - c is the EOF code point, U+002F (/), U+003F (?), or U+0023 (#)
@@ -630,7 +669,7 @@ bool url_aggregator::set_host_or_hostname(const std::string_view input) {
           add_authority_slashes_if_needed();
           delete_dash_dot();
         }
-        return true;
+        return check_url_size();
       }
 
       bool succeeded = parse_host(host_view);
@@ -642,7 +681,7 @@ bool url_aggregator::set_host_or_hostname(const std::string_view input) {
         // Should remove dash_dot from pathname
         delete_dash_dot();
       }
-      return true;
+      return check_url_size();
     }
   }
 
@@ -669,7 +708,7 @@ bool url_aggregator::set_host_or_hostname(const std::string_view input) {
     }
   }
   ADA_ASSERT_TRUE(validate());
-  return true;
+  return check_url_size();
 }
 
 bool url_aggregator::set_host(const std::string_view input) {
@@ -912,7 +951,14 @@ bool url_aggregator::set_hostname(const std::string_view input) {
   if (components.host_start == components.host_end) {
     return false;
   }
-  return checkers::verify_dns_length(get_hostname());
+  // Avoid allocation: construct a string_view directly into the buffer.
+  size_t start = components.host_start;
+  if (components.host_end > components.host_start &&
+      buffer[components.host_start] == '@') {
+    start++;
+  }
+  return checkers::verify_dns_length(
+      std::string_view(buffer.data() + start, components.host_end - start));
 }
 
 bool url_aggregator::parse_ipv4(std::string_view input, bool in_place) {
@@ -1165,6 +1211,9 @@ bool url_aggregator::parse_ipv6(std::string_view input) {
         // Set address[pieceIndex] to address[pieceIndex] times 0x100 +
         // ipv4Piece.
         // https://stackoverflow.com/questions/39060852/why-does-the-addition-of-two-shorts-return-an-int
+        if (!ipv4_piece.has_value()) {
+          return is_valid = false;
+        }
         address[piece_index] =
             uint16_t(address[piece_index] * 0x100 + *ipv4_piece);
 

@@ -23,19 +23,18 @@ namespace ada {
   return port.has_value();
 }
 [[nodiscard]] inline bool url::cannot_have_credentials_or_port() const {
-  return !host.has_value() || host.value().empty() ||
-         type == ada::scheme::type::FILE;
+  return !host.has_value() || host->empty() || type == ada::scheme::type::FILE;
 }
 [[nodiscard]] inline bool url::has_empty_hostname() const noexcept {
   if (!host.has_value()) {
     return false;
   }
-  return host.value().empty();
+  return host->empty();
 }
 [[nodiscard]] inline bool url::has_hostname() const noexcept {
   return host.has_value();
 }
-inline std::ostream &operator<<(std::ostream &out, const ada::url &u) {
+inline std::ostream& operator<<(std::ostream& out, const ada::url& u) {
   return out << u.to_string();
 }
 
@@ -48,7 +47,7 @@ inline std::ostream &operator<<(std::ostream &out, const ada::url &u) {
 }
 
 [[nodiscard]] ada_really_inline ada::url_components url::get_components()
-    const noexcept {
+    const {
   url_components out{};
 
   // protocol ends with ':'. for example: "https:"
@@ -71,12 +70,12 @@ inline std::ostream &operator<<(std::ostream &out, const ada::url &u) {
         out.host_start += uint32_t(password.size() + 1);
       }
 
-      out.host_end = uint32_t(out.host_start + host.value().size());
+      out.host_end = uint32_t(out.host_start + host->size());
     } else {
       out.username_end = out.host_start;
 
       // Host does not start with "@" if it does not include credentials.
-      out.host_end = uint32_t(out.host_start + host.value().size()) - 1;
+      out.host_end = uint32_t(out.host_start + host->size()) - 1;
     }
 
     running_index = out.host_end + 1;
@@ -133,7 +132,7 @@ inline void url::update_base_search(std::string_view input,
   query = ada::unicode::percent_encode(input, query_percent_encode_set);
 }
 
-inline void url::update_base_search(std::optional<std::string> &&input) {
+inline void url::update_base_search(std::optional<std::string>&& input) {
   query = std::move(input);
 }
 
@@ -167,7 +166,7 @@ constexpr void url::clear_search() { query = std::nullopt; }
 
 constexpr void url::set_protocol_as_file() { type = ada::scheme::type::FILE; }
 
-inline void url::set_scheme(std::string &&new_scheme) noexcept {
+inline void url::set_scheme(std::string&& new_scheme) noexcept {
   type = ada::scheme::get_scheme_type(new_scheme);
   // We only move the 'scheme' if it is non-special.
   if (!is_special()) {
@@ -175,12 +174,12 @@ inline void url::set_scheme(std::string &&new_scheme) noexcept {
   }
 }
 
-constexpr void url::copy_scheme(ada::url &&u) {
+constexpr void url::copy_scheme(ada::url&& u) {
   non_special_scheme = u.non_special_scheme;
   type = u.type;
 }
 
-constexpr void url::copy_scheme(const ada::url &u) {
+constexpr void url::copy_scheme(const ada::url& u) {
   non_special_scheme = u.non_special_scheme;
   type = u.type;
 }
@@ -215,6 +214,48 @@ constexpr void url::copy_scheme(const ada::url &u) {
     output += "#" + hash.value();
   }
   return output;
+}
+
+[[nodiscard]] inline size_t url::get_href_size() const noexcept {
+  // Mirrors the logic of get_href() but only computes the total size.
+  size_t size = 0;
+  // Protocol: scheme + ":"
+  if (is_special()) {
+    size += ada::scheme::details::is_special_list[type].size() + 1;
+  } else {
+    size += non_special_scheme.size() + 1;
+  }
+  if (host.has_value()) {
+    size += host->size();
+    size += 2;  // "//"
+    if (has_credentials()) {
+      size += username.size();
+      if (!password.empty()) {
+        size += 1 + password.size();  // ":" + password
+      }
+      size += 1;  // "@"
+    }
+    if (port.has_value()) {
+      size += 1;  // ":"
+      // Count digits of port value without calling std::to_string.
+      uint16_t p = port.value();
+      size += (p >= 10000)  ? 5
+              : (p >= 1000) ? 4
+              : (p >= 100)  ? 3
+              : (p >= 10)   ? 2
+                            : 1;
+    }
+  } else if (!has_opaque_path && path.starts_with("//")) {
+    size += 2;  // "/."
+  }
+  size += path.size();
+  if (query.has_value()) {
+    size += 1 + query->size();  // "?" + query
+  }
+  if (hash.has_value()) {
+    size += 1 + hash->size();  // "#" + hash
+  }
+  return size;
 }
 
 ada_really_inline size_t url::parse_port(std::string_view view,

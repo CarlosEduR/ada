@@ -5,8 +5,12 @@
 
 #include "ada/character_sets-inl.h"
 #include "ada/common_defs.h"
+#include "ada/implementation.h"
 #include "ada/log.h"
 #include "ada/unicode.h"
+#include "ada/url.h"
+#include "ada/url_aggregator.h"
+#include "ada/url_aggregator-inl.h"
 
 namespace ada::parser {
 
@@ -32,9 +36,12 @@ result_type parse_url_impl(std::string_view user_input,
   state state = state::SCHEME_START;
   result_type url{};
 
-  // We refuse to parse URL strings that exceed 4GB. Such strings are almost
-  // surely the result of a bug or are otherwise a security concern.
-  if (user_input.size() > std::numeric_limits<uint32_t>::max()) [[unlikely]] {
+  const uint32_t max_input_length = ada::get_max_input_length();
+
+  // We refuse to parse URL strings that exceed the maximum input length.
+  // By default, this is 4GB but can be configured via
+  // ada::set_max_input_length().
+  if (user_input.size() > max_input_length) [[unlikely]] {
     url.is_valid = false;
   }
   // Going forward, user_input.size() is in [0,
@@ -142,6 +149,7 @@ result_type parse_url_impl(std::string_view user_input,
           ada_log("SCHEME the scheme is ", url.get_protocol());
 
           // If url's scheme is "file", then:
+          // NOLINTNEXTLINE(bugprone-branch-clone)
           if (url.type == scheme::type::FILE) {
             // Set state to file state.
             state = state::FILE;
@@ -220,6 +228,7 @@ result_type parse_url_impl(std::string_view user_input,
         }
         // Otherwise, if base's scheme is not "file", set state to relative
         // state and decrease pointer by 1.
+        // NOLINTNEXTLINE(bugprone-branch-clone)
         else if (base_url->type != scheme::type::FILE) {
           ada_log("NO_SCHEME non-file relative path");
           state = state::RELATIVE_SCHEME;
@@ -480,6 +489,7 @@ result_type parse_url_impl(std::string_view user_input,
                 helpers::substring(url_data, input_position));
 
         // If url is special and c is U+002F (/) or U+005C (\), then:
+        // NOLINTNEXTLINE(bugprone-branch-clone)
         if (url.is_special() && (input_position != input_size) &&
             (url_data[input_position] == '/' ||
              url_data[input_position] == '\\')) {
@@ -621,6 +631,17 @@ result_type parse_url_impl(std::string_view user_input,
       }
       case state::OPAQUE_PATH: {
         ada_log("OPAQUE_PATH ", helpers::substring(url_data, input_position));
+        // Opaque path, query, and fragment are structurally always valid:
+        // the parser would just percent-encode whatever is there. When we
+        // are not storing values (can_parse), we can return immediately.
+        // We must set has_opaque_path = true before returning so that when
+        // this URL is used as an internal base inside can_parse, NO_SCHEME
+        // correctly rejects relative inputs against an opaque-path base
+        // (e.g. can_parse("", &"W:") must return false).
+        if constexpr (!store_values) {
+          url.has_opaque_path = true;
+          return url;
+        }
         std::string_view view = url_data.substr(input_position);
         // If c is U+003F (?), then set url's query to the empty string and
         // state to query state.
@@ -659,6 +680,13 @@ result_type parse_url_impl(std::string_view user_input,
       }
       case state::PATH_START: {
         ada_log("PATH_START ", helpers::substring(url_data, input_position));
+        // Path, query, and fragment are structurally always valid: the
+        // parser would just percent-encode whatever is there. When we are
+        // not storing values (can_parse), we can return immediately since
+        // no subsequent state can invalidate the URL.
+        if constexpr (!store_values) {
+          return url;
+        }
 
         // If url is special, then:
         if (url.is_special()) {
@@ -706,6 +734,13 @@ result_type parse_url_impl(std::string_view user_input,
       }
       case state::PATH: {
         ada_log("PATH ", helpers::substring(url_data, input_position));
+        // Path, query, and fragment are structurally always valid: the
+        // parser would just percent-encode whatever is there. When we are
+        // not storing values (can_parse), we can return immediately since
+        // no subsequent state can invalidate the URL.
+        if constexpr (!store_values) {
+          return url;
+        }
         std::string_view view = url_data.substr(input_position);
 
         // Most time, we do not need percent encoding.
@@ -789,9 +824,8 @@ result_type parse_url_impl(std::string_view user_input,
         std::string_view view = url_data.substr(input_position);
 
         size_t location = view.find_first_of("/\\?");
-        std::string_view file_host_buffer(
-            view.data(),
-            (location != std::string_view::npos) ? location : view.size());
+        std::string_view file_host_buffer = view.substr(
+            0, (location != std::string_view::npos) ? location : view.size());
 
         if (checkers::is_windows_drive_letter(file_host_buffer)) {
           state = state::PATH;
@@ -923,12 +957,30 @@ result_type parse_url_impl(std::string_view user_input,
       url.update_unencoded_base_hash(*fragment);
     }
   }
+  // Check the resulting (normalized) URL size against the maximum input length.
+  // Normalization (percent-encoding, IDNA, etc.) can expand the URL beyond the
+  // original input size.
+  if constexpr (store_values) {
+    if (url.is_valid) {
+      if constexpr (result_type_is_ada_url_aggregator) {
+        if (url.buffer.size() > max_input_length) {
+          url.is_valid = false;
+        }
+      } else {
+        if (url.get_href_size() > max_input_length) {
+          url.is_valid = false;
+        }
+      }
+    }
+  }
   return url;
 }
 
-template url parse_url_impl(std::string_view user_input,
-                            const url* base_url = nullptr);
-template url_aggregator parse_url_impl(
+template url parse_url_impl<url, true>(std::string_view user_input,
+                                       const url* base_url = nullptr);
+template url_aggregator parse_url_impl<url_aggregator, true>(
+    std::string_view user_input, const url_aggregator* base_url = nullptr);
+template url_aggregator parse_url_impl<url_aggregator, false>(
     std::string_view user_input, const url_aggregator* base_url = nullptr);
 
 template <class result_type>
